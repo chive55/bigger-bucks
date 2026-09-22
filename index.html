@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Bigger Bucks</title>
+  <meta name="description" content="Tap the pile with more money. Kid coin-compare arcade from Chive Arcade.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Bigger Bucks">
+  <meta property="og:description" content="Tap the pile with more money. Count coins and bills before the timer snaps.">
+  <meta property="og:url" content="https://nathan-chive-arcade.itch.io/bigger-bucks">
+  <meta property="og:image" content="https://raw.githubusercontent.com/chive55/bigger-bucks/main/og.svg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Bigger Bucks">
+  <meta name="twitter:description" content="Tap the pile with more money. Count coins and bills before the timer snaps.">
+  <meta name="twitter:image" content="https://raw.githubusercontent.com/chive55/bigger-bucks/main/og.svg">
+  <link rel="canonical" href="https://nathan-chive-arcade.itch.io/bigger-bucks">
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; user-select: none; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; height: 100%; background: #080B18; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+    canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    #hud {
+      position: fixed; inset: 0; pointer-events: none;
+      display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+      padding: calc(14px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+      color: #eef2ff;
+    }
+    #top { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    #score, #best { font-variant-numeric: tabular-nums; letter-spacing: 0.08em; font-weight: 700; }
+    #best { color: #FFD85A; opacity: 0.95; }
+    #mute {
+      pointer-events: auto; min-height: 44px; min-width: 44px; padding: 0 12px;
+      border: 1px solid #ffffff22; border-radius: 10px; background: #0b0d18cc;
+      color: #eef2ff; cursor: pointer; font: inherit;
+    }
+    #panel {
+      pointer-events: auto; text-align: center; background: #0b0d18ee;
+      border: 1px solid #53E6FF44; border-radius: 16px; padding: 24px 28px; max-width: 420px;
+      box-shadow: 0 0 40px #53E6FF22;
+    }
+    #panel h1 { margin: 0 0 8px; letter-spacing: 0.1em; font-size: clamp(28px, 7vw, 42px); color: #fff; }
+    #panel h1 span { color: #FFD85A; text-shadow: 0 0 18px #FFD85A88; }
+    #panel p { margin: 0 0 16px; color: #B8C3E4; }
+    #result { margin: 0 0 12px; min-height: 1.2em; color: #FFD85A; font-weight: 700; }
+    button.go {
+      min-height: 48px; padding: 0 22px; border: 0; border-radius: 10px;
+      background: #FFD85A; color: #080B18; font-weight: 800; cursor: pointer; font-size: 16px;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="top">
+      <div id="score">0</div>
+      <div id="best">BEST 0</div>
+      <button id="mute" type="button">Sound on</button>
+    </div>
+    <div id="panel">
+      <h1>BIGGER <span>BUCKS</span></h1>
+      <p>Tap the pile with more money. Count coins and bills before time runs out.</p>
+      <p id="result"></p>
+      <button class="go" id="go" type="button">Play</button>
+    </div>
+  </div>
+  <script>
+    const audio = (() => {
+      const KEY = 'bigger-bucks-mute';
+      let ctx, master, muted = false, pulseOsc = null, pulseGain = null;
+      try { muted = localStorage.getItem(KEY) === '1'; } catch (e) {}
+      function ac() {
+        if (!ctx) {
+          const C = window.AudioContext || window.webkitAudioContext;
+          if (!C) return null;
+          ctx = new C();
+          master = ctx.createGain();
+          master.gain.value = muted ? 0 : 0.22;
+          master.connect(ctx.destination);
+        }
+        return ctx;
+      }
+      function unlock() {
+        const c = ac();
+        if (c && c.state === 'suspended') c.resume();
+      }
+      function setMuted(on) {
+        muted = !!on;
+        try { localStorage.setItem(KEY, muted ? '1' : '0'); } catch (e) {}
+        if (master) master.gain.value = muted ? 0 : 0.22;
+        if (muted) pulse(false);
+      }
+      function env(start, peak, dur) {
+        const c = ac(); if (!c || muted) return null;
+        const g = c.createGain();
+        g.gain.setValueAtTime(0.0001, start);
+        g.gain.exponentialRampToValueAtTime(peak, start + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+        g.connect(master);
+        return g;
+      }
+      function tone(freq, type, dur, peak) {
+        const c = ac(); if (!c || muted) return;
+        const t = c.currentTime;
+        const o = c.createOscillator();
+        o.type = type || 'square';
+        o.frequency.setValueAtTime(freq, t);
+        o.connect(env(t, peak || 0.2, dur || 0.12));
+        o.start(t);
+        o.stop(t + (dur || 0.12) + 0.02);
+      }
+      function sweep(from, to, type, dur, peak) {
+        const c = ac(); if (!c || muted) return;
+        const t = c.currentTime;
+        const o = c.createOscillator();
+        o.type = type || 'sawtooth';
+        o.frequency.setValueAtTime(from, t);
+        o.frequency.exponentialRampToValueAtTime(Math.max(40, to), t + dur);
+        o.connect(env(t, peak || 0.18, dur));
+        o.start(t);
+        o.stop(t + dur + 0.02);
+      }
+      function noise(dur, peak) {
+        const c = ac(); if (!c || muted) return;
+        const t = c.currentTime;
+        const n = Math.max(1, Math.floor(c.sampleRate * dur));
+        const buf = c.createBuffer(1, n, c.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < n; i++) data[i] = Math.random() * 2 - 1;
+        const src = c.createBufferSource();
+        src.buffer = buf;
+        const f = c.createBiquadFilter();
+        f.type = 'highpass';
+        f.frequency.value = 900;
+        src.connect(f);
+        f.connect(env(t, peak || 0.16, dur));
+        src.start(t);
+        src.stop(t + dur + 0.02);
+      }
+      function pulse(on) {
+        const c = ac();
+        if (!c) return;
+        if (!on || muted) {
+          if (pulseOsc) { try { pulseOsc.stop(); } catch (e) {} pulseOsc = null; pulseGain = null; }
+          return;
+        }
+        if (pulseOsc) return;
+        pulseOsc = c.createOscillator();
+        pulseGain = c.createGain();
+        pulseOsc.type = 'triangle';
+        pulseOsc.frequency.value = 110;
+        pulseGain.gain.value = 0.025;
+        pulseOsc.connect(pulseGain);
+        pulseGain.connect(master);
+        pulseOsc.start();
+      }
+      const api = {
+        unlock, setMuted, isMuted: () => muted, pulse,
+        start() { tone(392, 'square', 0.08, 0.16); tone(523, 'square', 0.12, 0.14); },
+        tap() { tone(660, 'square', 0.06, 0.14); },
+        score() { sweep(520, 880, 'square', 0.14, 0.16); },
+        miss() { noise(0.08, 0.12); tone(180, 'sawtooth', 0.1, 0.1); },
+        die() { pulse(false); sweep(320, 70, 'sawtooth', 0.38, 0.2); noise(0.16, 0.1); }
+      };
+      window.audio = api;
+      return api;
+    })();
+
+    const KINDS = [
+      { id: 'P', name: 'penny', cents: 1, r: 16, fill: '#C56A3A', rim: '#8A3F1E', ink: '#fff' },
+      { id: 'N', name: 'nickel', cents: 5, r: 18, fill: '#A8B0BE', rim: '#6E7686', ink: '#1a1d28' },
+      { id: 'D', name: 'dime', cents: 10, r: 14, fill: '#C5CDD8', rim: '#7E8796', ink: '#1a1d28' },
+      { id: 'Q', name: 'quarter', cents: 25, r: 22, fill: '#D7DEE8', rim: '#8A93A4', ink: '#1a1d28' },
+      { id: '$', name: 'dollar coin', cents: 100, r: 22, fill: '#FFD85A', rim: '#C79A1E', ink: '#3a2a00' },
+      { id: '1', name: 'one', cents: 100, bill: true, w: 54, h: 26, fill: '#2F8A5A', rim: '#39D98A', ink: '#fff' },
+      { id: '5', name: 'five', cents: 500, bill: true, w: 58, h: 28, fill: '#2A6B4A', rim: '#53E6FF', ink: '#fff' }
+    ];
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const bestEl = document.getElementById('best');
+    const panel = document.getElementById('panel');
+    const resultEl = document.getElementById('result');
+    const go = document.getElementById('go');
+    const muteBtn = document.getElementById('mute');
+
+    let running = false, score = 0, best = 0, lives = 3, streak = 0;
+    let shake = 0, flash = 0, lock = false, lockT = 0;
+    let round = null, particles = [], floaters = [];
+    let last = 0;
+    try { best = Number(localStorage.getItem('bigger-bucks-best') || 0); } catch (e) {}
+    bestEl.textContent = 'BEST ' + best;
+
+    function resize() {
+      canvas.width = innerWidth * devicePixelRatio;
+      canvas.height = innerHeight * devicePixelRatio;
+    }
+    addEventListener('resize', resize);
+    resize();
+
+    muteBtn.textContent = audio.isMuted() ? 'Sound off' : 'Sound on';
+    muteBtn.onclick = () => {
+      audio.unlock();
+      audio.setMuted(!audio.isMuted());
+      muteBtn.textContent = audio.isMuted() ? 'Sound off' : 'Sound on';
+    };
+
+    function saveBest() {
+      if (score > best) {
+        best = score;
+        try { localStorage.setItem('bigger-bucks-best', String(best)); } catch (e) {}
+      }
+      bestEl.textContent = 'BEST ' + best;
+    }
+
+    function pickKinds(level) {
+      if (level < 3) return KINDS.slice(0, 4);
+      if (level < 7) return KINDS.slice(0, 5);
+      return KINDS;
+    }
+
+    function makePile(level) {
+      const pool = pickKinds(level);
+      const n = 2 + Math.min(5, 1 + Math.floor(level / 2) + (Math.random() * 2 | 0));
+      const items = [];
+      for (let i = 0; i < n; i++) items.push(pool[Math.random() * pool.length | 0]);
+      const cents = items.reduce((s, k) => s + k.cents, 0);
+      return { items, cents };
+    }
+
+    function layoutPile(pile, cx, cy, w, h) {
+      const placed = [];
+      const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(pile.items.length))));
+      pile.items.forEach((k, i) => {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const ox = (col - (cols - 1) / 2) * 46;
+        const oy = (row - 0.4) * 40;
+        const jx = (Math.sin(i * 2.1 + pile.cents) * 8);
+        const jy = (Math.cos(i * 1.7 + pile.cents) * 6);
+        placed.push({ k, x: cx + ox + jx, y: cy + oy + jy });
+      });
+      pile.placed = placed;
+      pile.box = { cx, cy, w, h };
+    }
+
+    function newRound() {
+      const level = score;
+      let a = makePile(level), b = makePile(level);
+      let guard = 0;
+      while (a.cents === b.cents && guard++ < 20) b = makePile(level);
+      if (a.cents === b.cents) b.cents += 1;
+      const limit = Math.max(3.2, 8.2 - score * 0.28);
+      round = { a, b, winner: a.cents > b.cents ? 'L' : 'R', t: limit, max: limit, popped: false };
+      lock = false;
+    }
+
+    function burst(x, y, color, n) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 40 + Math.random() * 180;
+        particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40, life: 0.45 + Math.random() * 0.25, color });
+      }
+    }
+    function floatText(x, y, text, color) {
+      floaters.push({ x, y, text, color, life: 0.7 });
+    }
+    function endRun() {
+      running = false;
+      audio.die();
+      saveBest();
+      resultEl.textContent = 'Score ' + score + '   Best ' + best;
+      go.textContent = 'Play again';
+      panel.classList.remove('hidden');
+    }
+    function startRun() {
+      audio.unlock();
+      audio.setMuted(audio.isMuted());
+      audio.start();
+      audio.pulse(true);
+      panel.classList.add('hidden');
+      running = true;
+      score = 0;
+      lives = 3;
+      streak = 0;
+      particles = [];
+      floaters = [];
+      shake = 0;
+      flash = 0;
+      scoreEl.textContent = '0';
+      newRound();
+    }
+    go.onclick = startRun;
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) audio.pulse(false);
+      else if (running) { audio.unlock(); audio.pulse(true); }
+    });
+    function choose(side) {
+      if (!running || !round || lock) return;
+      audio.tap();
+      lock = true;
+      lockT = 0.42;
+      const ok = side === round.winner;
+      const box = side === 'L' ? round.a.box : round.b.box;
+      if (ok) {
+        audio.score();
+        score += 1 + Math.floor(streak / 3);
+        streak += 1;
+        scoreEl.textContent = String(score);
+        saveBest();
+        flash = 0.12;
+        burst(box.cx, box.cy, '#FFD85A', 16);
+        floatText(box.cx, box.cy - 50, '+' + (1 + Math.floor((streak - 1) / 3)), '#39D98A');
+      } else {
+        audio.miss();
+        lives -= 1;
+        streak = 0;
+        shake = 10;
+        flash = -0.18;
+        burst(box.cx, box.cy, '#FF4D68', 12);
+        floatText(box.cx, box.cy - 50, lives ? 'OOPS' : 'OUT', '#FF4D68');
+        if (lives <= 0) { lockT = 0.55; round.popped = true; }
+      }
+    }
+    function onPointer(e) {
+      if (!running || !round || lock) return;
+      const r = canvas.getBoundingClientRect();
+      const x = e.clientX - r.left;
+      choose(x < r.width * 0.5 ? 'L' : 'R');
+    }
+    canvas.addEventListener('pointerdown', onPointer);
+    addEventListener('keydown', (e) => {
+      if (e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A') choose('L');
+      if (e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D') choose('R');
+      if ((e.code === 'Space' || e.code === 'Enter') && !running) go.click();
+    });
+    function drawCoin(g, item, s) {
+      const { k, x, y } = item;
+      if (k.bill) {
+        const w = k.w * s, h = k.h * s;
+        g.save(); g.translate(x, y);
+        g.fillStyle = k.fill; g.strokeStyle = k.rim; g.lineWidth = 2 * s;
+        roundRect(g, -w / 2, -h / 2, w, h, 4 * s); g.fill(); g.stroke();
+        g.fillStyle = k.ink;
+        g.font = '700 ' + (12 * s) + 'px ui-sans-serif, system-ui, sans-serif';
+        g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText('$' + k.id, 0, 0); g.restore(); return;
+      }
+      g.save(); g.translate(x, y);
+      g.beginPath(); g.arc(0, 0, k.r * s, 0, Math.PI * 2);
+      g.fillStyle = k.fill; g.fill();
+      g.lineWidth = 3 * s; g.strokeStyle = k.rim; g.stroke();
+      g.beginPath(); g.arc(0, 0, k.r * s * 0.72, 0, Math.PI * 2);
+      g.strokeStyle = k.rim + '99'; g.lineWidth = 1.2 * s; g.stroke();
+      g.fillStyle = k.ink;
+      g.font = '800 ' + (13 * s) + 'px ui-sans-serif, system-ui, sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(k.id, 0, 1); g.restore();
+    }
+    function roundRect(g, x, y, w, h, r) {
+      g.beginPath();
+      g.moveTo(x + r, y);
+      g.arcTo(x + w, y, x + w, y + h, r);
+      g.arcTo(x + w, y + h, x, y + h, r);
+      g.arcTo(x, y + h, x, y, r);
+      g.arcTo(x, y, x + w, y, r);
+      g.closePath();
+    }
+    function drawTray(g, pile, label, accent, s) {
+      const { cx, cy, w, h } = pile.box;
+      g.save();
+      g.fillStyle = '#111A38'; g.strokeStyle = accent; g.lineWidth = 3 * s;
+      g.shadowColor = accent; g.shadowBlur = 18 * s;
+      roundRect(g, cx - w / 2, cy - h / 2, w, h, 18 * s); g.fill(); g.stroke();
+      g.shadowBlur = 0;
+      g.fillStyle = '#B8C3E4';
+      g.font = '700 ' + (14 * s) + 'px ui-sans-serif, system-ui, sans-serif';
+      g.textAlign = 'center';
+      g.fillText(label, cx, cy - h / 2 + 22 * s);
+      pile.placed.forEach((it) => drawCoin(g, it, s));
+      g.restore();
+    }
+    function loop(now) {
+      requestAnimationFrame(loop);
+      const dt = Math.min(0.033, (now - last) / 1000 || 0.016);
+      last = now;
+      const dpr = devicePixelRatio || 1;
+      const W = canvas.width, H = canvas.height;
+      const s = Math.min(W, H) / 720;
+      const g = ctx;
+      if (shake > 0) shake = Math.max(0, shake - 40 * dt);
+      const jx = shake ? (Math.random() - 0.5) * shake * dpr : 0;
+      const jy = shake ? (Math.random() - 0.5) * shake * dpr : 0;
+      g.setTransform(1, 0, 0, 1, jx, jy);
+      g.fillStyle = '#080B18';
+      g.fillRect(-20, -20, W + 40, H + 40);
+      g.strokeStyle = '#53E6FF12'; g.lineWidth = 1;
+      const step = 48 * dpr;
+      for (let x = 0; x < W; x += step) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+      for (let y = 0; y < H; y += step) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+      const midX = W / 2;
+      const trayW = Math.min(W * 0.42, 420 * dpr);
+      const trayH = Math.min(H * 0.46, 340 * dpr);
+      const trayY = H * 0.54;
+      const leftX = W * 0.27;
+      const rightX = W * 0.73;
+      if (round) {
+        layoutPile(round.a, leftX, trayY, trayW, trayH);
+        layoutPile(round.b, rightX, trayY, trayW, trayH);
+      }
+      g.fillStyle = '#53E6FF';
+      g.font = '800 ' + (28 * s) + 'px ui-sans-serif, system-ui, sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.shadowColor = '#53E6FF66'; g.shadowBlur = 16;
+      g.fillText(running ? 'WHICH IS MORE?' : 'BIGGER BUCKS', midX, H * 0.18);
+      g.shadowBlur = 0;
+      g.fillStyle = '#FFD85A';
+      g.font = '700 ' + (14 * s) + 'px ui-sans-serif, system-ui, sans-serif';
+      g.fillText(running ? 'Tap a tray  \u00b7  Count every coin' : 'Count the coins. Pick the richer pile.', midX, H * 0.18 + 32 * s);
+      if (round) {
+        drawTray(g, round.a, 'LEFT', '#53E6FF', s);
+        drawTray(g, round.b, 'RIGHT', '#FFD85A', s);
+        if (lock && running) {
+          const win = round.winner === 'L' ? round.a : round.b;
+          g.fillStyle = '#39D98A';
+          g.font = '800 ' + (16 * s) + 'px ui-sans-serif, system-ui, sans-serif';
+          g.textAlign = 'center';
+          g.fillText('$' + (win.cents / 100).toFixed(2), win.box.cx, win.box.cy + win.box.h / 2 - 18 * s);
+        }
+      }
+      const barW = Math.min(W * 0.56, 420 * dpr);
+      const bx = midX - barW / 2, by = H * 0.255;
+      if (running && round) {
+        const pct = Math.max(0, round.t / round.max);
+        g.fillStyle = '#111A38';
+        roundRect(g, bx, by, barW, 10 * s, 5 * s); g.fill();
+        g.fillStyle = pct < 0.28 ? '#FF4D68' : '#39D98A';
+        roundRect(g, bx, by, Math.max(2, barW * pct), 10 * s, 5 * s); g.fill();
+        if (!lock) {
+          round.t -= dt;
+          if (round.t <= 0) {
+            audio.miss(); lives -= 1; streak = 0; shake = 10; lock = true; lockT = 0.45;
+            if (lives <= 0) round.popped = true;
+          }
+        }
+      }
+      for (let i = 0; i < 3; i++) {
+        const x = midX + (i - 1) * 26 * s;
+        const y = by + 28 * s;
+        g.beginPath(); g.arc(x, y, 7 * s, 0, Math.PI * 2);
+        g.fillStyle = i < lives ? '#FF4D68' : '#ffffff22'; g.fill();
+      }
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 220 * dt;
+        if (p.life <= 0) { particles.splice(i, 1); continue; }
+        g.globalAlpha = Math.max(0, p.life * 2);
+        g.fillStyle = p.color;
+        g.beginPath(); g.arc(p.x, p.y, 3.4 * s, 0, Math.PI * 2); g.fill();
+        g.globalAlpha = 1;
+      }
+      for (let i = floaters.length - 1; i >= 0; i--) {
+        const f = floaters[i];
+        f.life -= dt; f.y -= 40 * dt * dpr;
+        if (f.life <= 0) { floaters.splice(i, 1); continue; }
+        g.globalAlpha = Math.max(0, f.life * 1.6);
+        g.fillStyle = f.color;
+        g.font = '800 ' + (18 * s) + 'px ui-sans-serif, system-ui, sans-serif';
+        g.textAlign = 'center'; g.fillText(f.text, f.x, f.y); g.globalAlpha = 1;
+      }
+      if (flash !== 0) {
+        g.fillStyle = flash > 0 ? 'rgba(57,217,138,0.12)' : 'rgba(255,77,104,0.16)';
+        g.fillRect(0, 0, W, H);
+        flash = flash > 0 ? Math.max(0, flash - dt) : Math.min(0, flash + dt);
+      }
+      if (lock) {
+        lockT -= dt;
+        if (lockT <= 0) {
+          if (round && round.popped) endRun();
+          else if (lives <= 0) endRun();
+          else if (running) newRound();
+        }
+      }
+    }
+    requestAnimationFrame(loop);
+    window.__bb = { startRun, endRun, choose, get running() { return running; }, get lives() { return lives; } };
+    const shot = location.hash.replace('#','');
+    if (shot === 'play') setTimeout(startRun, 80);
+    if (shot === 'over') setTimeout(() => { startRun(); setTimeout(() => { score = Math.max(score, 7); scoreEl.textContent = String(score); endRun(); }, 220); }, 80);
+  </script>
+</body>
+</html>
